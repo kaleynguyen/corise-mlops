@@ -7,6 +7,8 @@ from sentence_transformers import SentenceTransformer
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.pipeline import Pipeline
 
+from datetime import datetime
+
 GLOBAL_CONFIG = {
     "model": {
         "featurizer": {
@@ -14,11 +16,11 @@ GLOBAL_CONFIG = {
             "sentence_transformer_embedding_dim": 768
         },
         "classifier": {
-            "serialized_model_path": "./data/news_classifier.joblib"
+            "serialized_model_path": "../data/news_classifier.joblib"
         }
     },
     "service": {
-        "log_destination": "./data/logs.out"
+        "log_destination": "../data/logs.out"
     }
 }
 
@@ -58,21 +60,13 @@ class NewsCategoryClassifier:
         [TO BE IMPLEMENTED]
         1. Load the sentence transformer model and initialize the `featurizer` of type `TransformerFeaturizer` (Hint: revisit Week 1 Step 4)
         2. Load the serialized model as defined in GLOBAL_CONFIG['model'] into memory and initialize `model`
-        """
+        """ 
+        featurizer_model = SentenceTransformer(
+            'sentence-transformers/{model}'.format(model=config['model']['featurizer']['sentence_transformer_model']))
+        dim =  config['model']['featurizer']['sentence_transformer_embedding_dim']
 
-        # Read in config
-        SENTENCE_TRANSFORMER_MODEL = config['featurizer']['sentence_transformer_model']
-        dim = config['featurizer']['sentence_transformer_embedding_dim']
-
-        # Load the sentence transformer model
-        sentence_transformer_model = SentenceTransformer(f'sentence-transformers/{SENTENCE_TRANSFORMER_MODEL}')     
-
-        # Initialize the featurizer of type TransformerFeaturizer
-        featurizer = TransformerFeaturizer(dim=dim, sentence_transformer_model=sentence_transformer_model)   
-
-        # Load the serialized model into memory and initialize the model
-        model_path = config["classifier"]["serialized_model_path"]
-        model = joblib.load(model_path)
+        featurizer = TransformerFeaturizer(dim, featurizer_model)
+        model = joblib.load(config['model']['classifier']['serialized_model_path'])
 
         self.pipeline = Pipeline([
             ('transformer_featurizer', featurizer),
@@ -93,14 +87,12 @@ class NewsCategoryClassifier:
             ...
         }
         """
+        pred = self.pipeline.predict_proba(model_input)[0]
+        result_dict = {}
+        for num, element in enumerate(pred):
+            result_dict['label_%d'%num] = element
 
-        Y_pred_proba = self.pipeline.predict_proba(np.array([model_input]))
-
-        # Make output dict
-        output = {l: p for l, p in zip(self.pipeline.classes_, Y_pred_proba[0])}
-
-
-        return output
+        return result_dict
 
     def predict_label(self, model_input: dict) -> str:
         """
@@ -111,8 +103,8 @@ class NewsCategoryClassifier:
 
         Output format: predicted label for the model input
         """
-        Y_pred = self.pipeline.predict(model_input)
-        return Y_pred 
+        pred = self.pipeline.predict(model_input)
+        return str(pred)
 
 
 app = FastAPI()
@@ -127,15 +119,13 @@ def startup_event():
         Access to the model instance and log file will be needed in /predict endpoint, make sure you
         store them as global variables
     """
-    
-    log_path = GLOBAL_CONFIG["service"]["log_destination"]
-    logger.add(log_path, format="{message}")
+    global classifier 
+    global log_file
 
+    classifier = NewsCategoryClassifier(GLOBAL_CONFIG)
+    log_file =  open(GLOBAL_CONFIG['service']['log_destination'],"a")
 
-    newsclassifier = NewsCategoryClassifier(GLOBAL_CONFIG["model"])
     logger.info("Setup completed")
-
-    return newsclassifier
 
 
 @app.on_event("shutdown")
@@ -146,7 +136,8 @@ def shutdown_event():
         1. Make sure to flush the log file and close any file pointers to avoid corruption
         2. Any other cleanups
     """
-    logger.remove()
+    log_file =  open(GLOBAL_CONFIG['service']['log_destination'],"w")
+    log_file.close()
     logger.info("Shutting down application")
 
 
@@ -167,34 +158,27 @@ def predict(request: PredictRequest):
         }
         3. Construct an instance of `PredictResponse` and return
     """
-    # Current date and time
-    now = datetime.now() 
+    global log_file
 
-    # Start time
-    st = time.time()
+    got_request_time = datetime.now()
+    res = classifier.predict_label([request.description])
+    probabilities = classifier.predict_proba([request.description])
+    inference_time = datetime.now()
 
-    # Run model inference and get predictions
-    result = newsclassifier.predict_label(request.description)
-    scores = newsclassifier.predict_proba(request.description)
-
-
-    # Get the end time, then get the execution time  
-    et = time.time()    
-    elapsed_time = et - st
-
-    # Response object
-    response = {"scores": scores, "label": result[0]}
-
-    # Log results to file
-    log_output = {
-        'timestamp': now.strftime("%Y:%m:%d, %H:%M:%S"),
-        'request': request,
-        'prediction': response, 
-        'latency': elapsed_time,
+    log_dict = {
+        'timestamp' : got_request_time.strftime('%Y:%m:%d %H:%M%S'),
+        'request' : request.__dict__ ,
+        'prediction' : res,
+        'latency' : datetime.timestamp(inference_time) - datetime.timestamp(got_request_time)
     }
-    logger.info(log_output)
 
-    return response
+    log_file.write(str(log_dict) + '\n')
+    log_file.close()
+
+    log_file =  open(GLOBAL_CONFIG['service']['log_destination'],"a")
+
+    response = PredictResponse(scores=probabilities, label=res)
+    return response.__dict__
 
 
 @app.get("/")
