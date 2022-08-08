@@ -61,11 +61,11 @@ class NewsCategoryClassifier:
         1. Load the sentence transformer model and initialize the `featurizer` of type `TransformerFeaturizer` (Hint: revisit Week 1 Step 4)
         2. Load the serialized model as defined in GLOBAL_CONFIG['model'] into memory and initialize `model`
         """ 
-        featurizer_model = SentenceTransformer(
-            'sentence-transformers/{model}'.format(model=config['model']['featurizer']['sentence_transformer_model']))
+        architecture = config['model']['featurizer']['sentence_transformer_model']
+        sentence_transformer_model = SentenceTransformer('sentence-transformers/{model}'.format(model=architecture))
         dim =  config['model']['featurizer']['sentence_transformer_embedding_dim']
 
-        featurizer = TransformerFeaturizer(dim, featurizer_model)
+        featurizer = TransformerFeaturizer(dim, sentence_transformer_model)
         model = joblib.load(config['model']['classifier']['serialized_model_path'])
 
         self.pipeline = Pipeline([
@@ -90,7 +90,7 @@ class NewsCategoryClassifier:
         pred = self.pipeline.predict_proba(model_input)[0]
         result_dict = {}
         for num, element in enumerate(pred):
-            result_dict['label_%d'%num] = element
+            result_dict['label_{}'.format(num)] = element
 
         return result_dict
 
@@ -136,6 +136,7 @@ def shutdown_event():
         1. Make sure to flush the log file and close any file pointers to avoid corruption
         2. Any other cleanups
     """
+    logger.remove()
     log_file =  open(GLOBAL_CONFIG['service']['log_destination'],"w")
     log_file.close()
     logger.info("Shutting down application")
@@ -160,24 +161,24 @@ def predict(request: PredictRequest):
     """
     global log_file
 
-    got_request_time = datetime.now()
-    res = classifier.predict_label([request.description])
+    start_time = datetime.now()
+    predicted_label = classifier.predict_label([request.description])
     probabilities = classifier.predict_proba([request.description])
-    inference_time = datetime.now()
+    end_time = datetime.now()
 
     log_dict = {
-        'timestamp' : got_request_time.strftime('%Y:%m:%d %H:%M%S'),
-        'request' : request.__dict__ ,
-        'prediction' : res,
-        'latency' : datetime.timestamp(inference_time) - datetime.timestamp(got_request_time)
+        'timestamp' : start_time.strftime('%Y:%m:%d %H:%M%S'),
+        'request' : request.__dict__,
+        'prediction' : predicted_label,
+        'latency' : datetime.timestamp(end_time) - datetime.timestamp(start_time)
     }
-
+    log_file =  open(GLOBAL_CONFIG['service']['log_destination'],"a")
     log_file.write(str(log_dict) + '\n')
     log_file.close()
 
-    log_file =  open(GLOBAL_CONFIG['service']['log_destination'],"a")
+    
 
-    response = PredictResponse(scores=probabilities, label=res)
+    response = PredictResponse(scores=probabilities, label=predicted_label)
     return response.__dict__
 
 
